@@ -1,0 +1,34 @@
+[Unit]
+Description=Baromio Private Probe
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+# DynamicUser creates an ephemeral, unprivileged user for this unit only -
+# no shared "probe" account, no UID to manage.
+DynamicUser=yes
+StateDirectory=baromio-probe
+Environment=BAROMIO_DATA_DIR=/var/lib/baromio-probe
+# BAROMIO_ENROLL_TOKEN is only needed once, on first start before
+# /var/lib/baromio-probe/identity.json exists - set it in an override for
+# that first run, then remove it.
+EnvironmentFile=-/etc/baromio-probe/env
+ExecStart=/usr/local/bin/baromio-probe
+Restart=on-failure
+RestartSec=5s
+
+ProtectSystem=strict
+ProtectHome=yes
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_INET AF_INET6
+RestrictNamespaces=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+
+[Install]
+WantedBy=multi-user.target

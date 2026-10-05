@@ -1,0 +1,63 @@
+{
+  "_comment": "Shared response fixtures and expected verdicts for http/keyword checks, so the Go Probe and Baromio's HttpMonitorChecker::buildResult cannot drift silently. Consumed by TestCheckCasesContract (Go) and a vendored-copy PHPUnit test on the Baromio side (not yet wired up - follow-up work).",
+  "cases": [
+    {
+      "name": "plain http, 200",
+      "type": "http",
+      "response": { "status": 200 },
+      "expect": { "is_up": true, "error_code": null }
+    },
+    {
+      "name": "plain http, 404",
+      "type": "http",
+      "response": { "status": 404 },
+      "expect": { "is_up": false, "error_code": 1 }
+    },
+    {
+      "name": "plain http, 500",
+      "type": "http",
+      "response": { "status": 500 },
+      "expect": { "is_up": false, "error_code": 1 }
+    },
+    {
+      "name": "keyword exists, present",
+      "type": "keyword",
+      "response": { "status": 200, "body": "Welcome to the site" },
+      "keyword": "Welcome",
+      "keyword_type": "exists",
+      "expect": { "is_up": true, "error_code": null }
+    },
+    {
+      "name": "keyword exists, missing",
+      "type": "keyword",
+      "response": { "status": 200, "body": "nothing here" },
+      "keyword": "Welcome",
+      "keyword_type": "exists",
+      "expect": { "is_up": false, "error_code": 3 }
+    },
+    {
+      "name": "keyword not_exists, present",
+      "type": "keyword",
+      "response": { "status": 200, "body": "under maintenance" },
+      "keyword": "maintenance",
+      "keyword_type": "not_exists",
+      "expect": { "is_up": false, "error_code": 4 }
+    },
+    {
+      "name": "keyword not_exists, absent",
+      "type": "keyword",
+      "response": { "status": 200, "body": "all good" },
+      "keyword": "maintenance",
+      "keyword_type": "not_exists",
+      "expect": { "is_up": true, "error_code": null }
+    },
+    {
+      "name": "keyword case-insensitive match",
+      "type": "keyword",
+      "response": { "status": 200, "body": "WELCOME ABOARD" },
+      "keyword": "welcome",
+      "keyword_type": "exists",
+      "expect": { "is_up": true, "error_code": null }
+    }
+  ]
+}

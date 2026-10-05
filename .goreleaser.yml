@@ -1,0 +1,67 @@
+version: 2
+
+project_name: baromio-probe
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: baromio-probe
+    main: ./cmd/baromio-probe
+    binary: baromio-probe
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+    goarch:
+      - amd64
+      - arm64
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w -X main.Version={{.Version}}
+
+archives:
+  - id: baromio-probe
+    formats: [tar.gz]
+    name_template: >-
+      {{ .ProjectName }}_{{ .Os }}_{{ .Arch }}
+    files:
+      - README.md
+      - SECURITY.md
+      - LICENSE*
+
+checksum:
+  name_template: "checksums.txt"
+
+dockers:
+  - image_templates:
+      - "ghcr.io/oaki/baromio-probe:{{ .Version }}-amd64"
+    use: buildx
+    dockerfile: Dockerfile
+    goarch: amd64
+    build_flag_templates:
+      - "--platform=linux/amd64"
+  - image_templates:
+      - "ghcr.io/oaki/baromio-probe:{{ .Version }}-arm64"
+    use: buildx
+    dockerfile: Dockerfile
+    goarch: arm64
+    build_flag_templates:
+      - "--platform=linux/arm64"
+
+docker_manifests:
+  - name_template: "ghcr.io/oaki/baromio-probe:{{ .Version }}"
+    image_templates:
+      - "ghcr.io/oaki/baromio-probe:{{ .Version }}-amd64"
+      - "ghcr.io/oaki/baromio-probe:{{ .Version }}-arm64"
+  - name_template: "ghcr.io/oaki/baromio-probe:latest"
+    image_templates:
+      - "ghcr.io/oaki/baromio-probe:{{ .Version }}-amd64"
+      - "ghcr.io/oaki/baromio-probe:{{ .Version }}-arm64"
+
+release:
+  github:
+    owner: oaki
+    name: baromio-probe
