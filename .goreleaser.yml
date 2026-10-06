@@ -39,14 +39,14 @@ dockers:
   - image_templates:
       - "ghcr.io/oaki/baromio-probe:{{ .Version }}-amd64"
     use: buildx
-    dockerfile: Dockerfile
+    dockerfile: Dockerfile.goreleaser
     goarch: amd64
     build_flag_templates:
       - "--platform=linux/amd64"
   - image_templates:
       - "ghcr.io/oaki/baromio-probe:{{ .Version }}-arm64"
     use: buildx
-    dockerfile: Dockerfile
+    dockerfile: Dockerfile.goreleaser
     goarch: arm64
     build_flag_templates:
       - "--platform=linux/arm64"

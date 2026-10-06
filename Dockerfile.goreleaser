@@ -1,0 +1,17 @@
+# Used only by the release pipeline (.goreleaser.yml), whose Docker build
+# context is just this file plus the already cross-compiled binary - not the
+# whole repo. For a from-source image, use the top-level Dockerfile instead.
+FROM busybox:1.36 AS dirsetup
+RUN mkdir -p /var/lib/baromio-probe && chown 65532:65532 /var/lib/baromio-probe
+
+FROM gcr.io/distroless/static-debian12:nonroot
+COPY baromio-probe /baromio-probe
+# distroless has no shell to mkdir/chown the volume target, so its
+# ownership is prepared in dirsetup above and copied in - without this, the
+# nonroot user cannot write to the volume Docker creates for it on first
+# run (found running the published image locally before release).
+COPY --from=dirsetup --chown=65532:65532 /var/lib/baromio-probe /var/lib/baromio-probe
+VOLUME ["/var/lib/baromio-probe"]
+ENV BAROMIO_DATA_DIR=/var/lib/baromio-probe
+USER nonroot:nonroot
+ENTRYPOINT ["/baromio-probe"]
