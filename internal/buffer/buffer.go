@@ -6,6 +6,9 @@ package buffer
 
 import (
 	"bufio"
+	"crypto/rand"
+	"encoding/binary"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -34,6 +37,26 @@ type Entry struct {
 	TimingsMs    map[string]int `json:"timings_ms,omitempty"`
 	TLS          *TLSEntry      `json:"tls,omitempty"`
 	KeywordFound *bool          `json:"keyword_found,omitempty"`
+}
+
+// NewID returns a fresh result id as a UUID v7 (RFC 9562), the format the
+// report contract requires (§5.3): Baromio validates it as a UUID and
+// stores it in a PostgreSQL uuid column for retry dedupe. The leading
+// 48-bit millisecond timestamp keeps ids roughly in check order.
+func NewID() string {
+	var b [16]byte
+
+	binary.BigEndian.PutUint64(b[:8], uint64(time.Now().UnixMilli())<<16)
+	if _, err := rand.Read(b[6:]); err != nil {
+		panic(fmt.Sprintf("crypto/rand failed: %v", err))
+	}
+
+	b[6] = 0x70 | (b[6] & 0x0f) // version 7
+	b[8] = 0x80 | (b[8] & 0x3f) // RFC 9562 variant
+
+	h := hex.EncodeToString(b[:])
+
+	return h[0:8] + "-" + h[8:12] + "-" + h[12:16] + "-" + h[16:20] + "-" + h[20:32]
 }
 
 // TLSEntry is the TLS leaf certificate info attached to a result.
@@ -126,6 +149,26 @@ func (b *Buffer) All() ([]Entry, error) {
 	defer b.mu.Unlock()
 
 	return b.readAllLocked()
+}
+
+// Batch returns up to max of the oldest entries, and whether more are left
+// behind them. Baromio refuses a report over its per-request limit with 413,
+// so a buffer that grew during an outage has to drain in batches - sending
+// it whole would fail the same way on every retry and never empty.
+func (b *Buffer) Batch(max int) (entries []Entry, more bool, err error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	all, err := b.readAllLocked()
+	if err != nil {
+		return nil, false, err
+	}
+
+	if len(all) <= max {
+		return all, false, nil
+	}
+
+	return all[:max], true, nil
 }
 
 // Remove drops every entry whose ID is in ids - the results Baromio has

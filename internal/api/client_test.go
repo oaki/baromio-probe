@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/oaki/baromio-probe/internal/buffer"
 	"github.com/oaki/baromio-probe/internal/identity"
 )
 
@@ -85,7 +86,7 @@ func TestReportSignsTheRequestVerifiably(t *testing.T) {
 
 	client := New(srv.URL, id, "test")
 
-	_, err := client.Report(ReportRequest{Results: []ReportResult{{ID: "r1", MonitorID: "m1", IsUp: true}}})
+	_, err := client.Report(ReportRequest{Results: []buffer.Entry{{ID: "r1", MonitorID: "m1", IsUp: true}}})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -197,6 +198,79 @@ func TestEveryRequestIdentifiesItselfAndAsksForJSON(t *testing.T) {
 		if gotAccepts[i] != "application/json" {
 			t.Errorf("request %d: expected Accept application/json, got %q", i, gotAccepts[i])
 		}
+	}
+}
+
+// baromioConfigBody is the §5.4 config payload exactly as Baromio's
+// ProbeConfigBuilder emits it: headers are a list of {name, value} objects,
+// an empty list when a monitor has none, and absent on tcp monitors.
+const baromioConfigBody = `{
+  "config_version": 7,
+  "monitors": [
+    {"id": "0192a1b2-0000-7000-8000-000000000001", "type": "http", "url": "https://intranet.local/health", "interval_seconds": 60, "timeout_seconds": 15, "headers": [{"name": "Authorization", "value": "Bearer secret"}]},
+    {"id": "0192a1b2-0000-7000-8000-000000000002", "type": "keyword", "url": "http://10.0.4.12/status", "interval_seconds": 300, "timeout_seconds": 15, "headers": [], "keyword": "OK", "keyword_type": "exists"},
+    {"id": "0192a1b2-0000-7000-8000-000000000003", "type": "tcp", "host": "db.internal", "port": 5432, "interval_seconds": 60, "timeout_seconds": 5}
+  ]
+}`
+
+func TestConfigDecodesBaromiosHeaderList(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("ETag", `"7"`)
+		w.Write([]byte(baromioConfigBody))
+	}))
+	defer srv.Close()
+
+	client := New(srv.URL, testIdentity(t), "test")
+
+	cfg, _, _, err := client.Config("")
+	if err != nil {
+		t.Fatalf("expected Baromio's real config shape to decode, got error: %v", err)
+	}
+
+	if len(cfg.Monitors) != 3 {
+		t.Fatalf("expected 3 monitors, got %d", len(cfg.Monitors))
+	}
+	if got := cfg.Monitors[0].Headers["Authorization"]; got != "Bearer secret" {
+		t.Errorf("expected the Authorization header to be carried over, got %q", got)
+	}
+	if len(cfg.Monitors[1].Headers) != 0 {
+		t.Errorf("expected an empty header list to decode as no headers, got %v", cfg.Monitors[1].Headers)
+	}
+	if cfg.Monitors[2].Port != 5432 {
+		t.Errorf("expected the tcp port to decode, got %d", cfg.Monitors[2].Port)
+	}
+}
+
+func TestReportCarriesTheTlsCertificate(t *testing.T) {
+	var got struct {
+		Results []struct {
+			TLS *struct {
+				ExpiresAt int64  `json:"expires_at"`
+				Issuer    string `json:"issuer"`
+			} `json:"tls"`
+		} `json:"results"`
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewDecoder(r.Body).Decode(&got)
+		json.NewEncoder(w).Encode(ReportResponse{Accepted: 1})
+	}))
+	defer srv.Close()
+
+	client := New(srv.URL, testIdentity(t), "test")
+
+	_, err := client.Report(ReportRequest{Results: []buffer.Entry{{
+		ID: "r1", MonitorID: "m1", IsUp: true,
+		TLS: &buffer.TLSEntry{ExpiresAt: 1767225600, Issuer: "Internal CA"},
+	}}})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(got.Results) != 1 || got.Results[0].TLS == nil {
+		t.Fatalf("expected the result's tls block to be sent, got %+v", got.Results)
+	}
+	if got.Results[0].TLS.ExpiresAt != 1767225600 || got.Results[0].TLS.Issuer != "Internal CA" {
+		t.Errorf("expected expires_at and issuer to be sent unchanged, got %+v", got.Results[0].TLS)
 	}
 }
 

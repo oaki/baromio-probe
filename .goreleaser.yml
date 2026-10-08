@@ -56,6 +56,11 @@ docker_manifests:
     image_templates:
       - "ghcr.io/oaki/baromio-probe:{{ .Version }}-amd64"
       - "ghcr.io/oaki/baromio-probe:{{ .Version }}-arm64"
+  # Floating minor tag, so the README's `:0.1` keeps receiving patch releases.
+  - name_template: "ghcr.io/oaki/baromio-probe:{{ .Major }}.{{ .Minor }}"
+    image_templates:
+      - "ghcr.io/oaki/baromio-probe:{{ .Version }}-amd64"
+      - "ghcr.io/oaki/baromio-probe:{{ .Version }}-arm64"
   - name_template: "ghcr.io/oaki/baromio-probe:latest"
     image_templates:
       - "ghcr.io/oaki/baromio-probe:{{ .Version }}-amd64"

@@ -7,8 +7,6 @@ package main
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"fmt"
 	"log/slog"
 	"os"
@@ -37,6 +35,10 @@ var Version = "dev"
 // restarted, already-enrolled Probe has no enroll call to read it from, so
 // it is a constant here rather than persisted state.
 const reportInterval = 60 * time.Second
+
+// backlogDrainDelay paces the follow-up batches after an outage, well inside
+// the report endpoint's 120 requests/minute throttle.
+const backlogDrainDelay = 2 * time.Second
 
 // configPollInterval is how often the Probe checks for a changed config,
 // independent of the fixed report cadence.
@@ -224,7 +226,7 @@ func (s *probeState) setBlocked(ids []string) {
 
 func (s *probeState) check(ctx context.Context, cfg scheduler.MonitorConfig) bool {
 	entry := buffer.Entry{
-		ID:        newResultID(cfg.ID),
+		ID:        buffer.NewID(),
 		MonitorID: cfg.ID,
 		CheckedAt: time.Now().Unix(),
 	}
@@ -271,30 +273,20 @@ func (s *probeState) check(ctx context.Context, cfg scheduler.MonitorConfig) boo
 	return entry.IsUp
 }
 
-func newResultID(monitorID string) string {
-	sum := sha256.Sum256([]byte(fmt.Sprintf("%s-%d-%d", monitorID, time.Now().UnixNano(), os.Getpid())))
-	return hex.EncodeToString(sum[:16])
-}
-
 func reportLoop(ctx context.Context, logger *slog.Logger, client *api.Client, buf *buffer.Buffer, state *probeState) {
 	backoff := api.NewBackoff(5*time.Second, 5*time.Minute)
 
-	sendOnce := func() bool {
-		entries, err := buf.All()
+	// sendOnce posts the oldest batch of buffered results. ok is false on a
+	// failure; more is true when a backlog is still waiting behind the batch.
+	sendOnce := func() (ok, more bool) {
+		entries, more, err := buf.Batch(api.MaxResultsPerReport)
 		if err != nil {
 			logger.Warn("reading buffer failed", "error", err)
-			return false
+			return false, false
 		}
 
-		results := make([]api.ReportResult, 0, len(entries))
 		ids := make(map[string]bool, len(entries))
-
 		for _, e := range entries {
-			results = append(results, api.ReportResult{
-				ID: e.ID, MonitorID: e.MonitorID, CheckedAt: e.CheckedAt, IsUp: e.IsUp,
-				StatusCode: e.StatusCode, ErrorCode: e.ErrorCode, Method: e.Method,
-				FallbackUsed: e.FallbackUsed, TimingsMs: e.TimingsMs, KeywordFound: e.KeywordFound,
-			})
 			ids[e.ID] = true
 		}
 
@@ -304,19 +296,19 @@ func reportLoop(ctx context.Context, logger *slog.Logger, client *api.Client, bu
 
 		resp, err := client.Report(api.ReportRequest{
 			Version: Version, Platform: runtime.GOOS + "/" + runtime.GOARCH,
-			SentAt: time.Now().Unix(), Results: results, BlockedMonitorIDs: blocked,
+			SentAt: time.Now().Unix(), Results: entries, BlockedMonitorIDs: blocked,
 		})
 		if err != nil {
 			logger.Warn("report failed, will retry", "error", err)
-			return false
+			return false, false
 		}
 
 		if err := buf.Remove(ids); err != nil {
 			logger.Warn("clearing reported results failed", "error", err)
 		}
 
-		logger.Info("reported", "accepted", resp.Accepted, "ignored", resp.Ignored)
-		return true
+		logger.Info("reported", "accepted", resp.Accepted, "ignored", resp.Ignored, "backlog", more)
+		return true, more
 	}
 
 	timer := time.NewTimer(reportInterval)
@@ -327,11 +319,16 @@ func reportLoop(ctx context.Context, logger *slog.Logger, client *api.Client, bu
 		case <-ctx.Done():
 			return
 		case <-timer.C:
-			if sendOnce() {
+			ok, more := sendOnce()
+			switch {
+			case !ok:
+				timer.Reset(backoff.Next())
+			case more:
+				backoff.Reset()
+				timer.Reset(backlogDrainDelay)
+			default:
 				backoff.Reset()
 				timer.Reset(reportInterval)
-			} else {
-				timer.Reset(backoff.Next())
 			}
 		}
 	}

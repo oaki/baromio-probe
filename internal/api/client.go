@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/oaki/baromio-probe/internal/buffer"
 	"github.com/oaki/baromio-probe/internal/identity"
 )
 
@@ -92,31 +93,19 @@ func (c *Client) Enroll(req EnrollRequest) (*EnrollResponse, error) {
 	return &out, nil
 }
 
-// ReportResult is one buffered check result sent in a report.
-type ReportResult struct {
-	ID           string         `json:"id"`
-	MonitorID    string         `json:"monitor_id"`
-	CheckedAt    int64          `json:"checked_at"`
-	IsUp         bool           `json:"is_up"`
-	StatusCode   *int           `json:"status_code,omitempty"`
-	ErrorCode    *int           `json:"error_code,omitempty"`
-	Method       string         `json:"method,omitempty"`
-	FallbackUsed bool           `json:"fallback_used,omitempty"`
-	TimingsMs    map[string]int `json:"timings_ms,omitempty"`
-	TLS          *struct {
-		ExpiresAt int64  `json:"expires_at,omitempty"`
-		Issuer    string `json:"issuer,omitempty"`
-	} `json:"tls,omitempty"`
-	KeywordFound *bool `json:"keyword_found,omitempty"`
-}
+// MaxResultsPerReport mirrors ReportProbeResultsRequest::MAX_RESULTS on the
+// Baromio side: a report carrying more is refused with 413 (§5.3).
+const MaxResultsPerReport = 500
 
-// ReportRequest is the body of POST /api/v1/probe/report.
+// ReportRequest is the body of POST /api/v1/probe/report. Results are the
+// buffered entries as stored, so nothing a check recorded (TLS included) is
+// lost in a translation step on the way out.
 type ReportRequest struct {
 	Version           string         `json:"version,omitempty"`
 	Platform          string         `json:"platform,omitempty"`
 	SentAt            int64          `json:"sent_at,omitempty"`
 	DroppedResults    int            `json:"dropped_results,omitempty"`
-	Results           []ReportResult `json:"results"`
+	Results           []buffer.Entry `json:"results"`
 	BlockedMonitorIDs []string       `json:"blocked_monitor_ids,omitempty"`
 }
 
@@ -155,16 +144,40 @@ func (c *Client) Report(req ReportRequest) (*ReportResponse, error) {
 
 // ConfigMonitor is one monitor entry in a Config response.
 type ConfigMonitor struct {
-	ID              string            `json:"id"`
-	Type            string            `json:"type"`
-	IntervalSeconds int               `json:"interval_seconds"`
-	TimeoutSeconds  int               `json:"timeout_seconds"`
-	URL             string            `json:"url,omitempty"`
-	Headers         map[string]string `json:"headers,omitempty"`
-	Keyword         string            `json:"keyword,omitempty"`
-	KeywordType     string            `json:"keyword_type,omitempty"`
-	Host            string            `json:"host,omitempty"`
-	Port            int               `json:"port,omitempty"`
+	ID              string  `json:"id"`
+	Type            string  `json:"type"`
+	IntervalSeconds int     `json:"interval_seconds"`
+	TimeoutSeconds  int     `json:"timeout_seconds"`
+	URL             string  `json:"url,omitempty"`
+	Headers         Headers `json:"headers,omitempty"`
+	Keyword         string  `json:"keyword,omitempty"`
+	KeywordType     string  `json:"keyword_type,omitempty"`
+	Host            string  `json:"host,omitempty"`
+	Port            int     `json:"port,omitempty"`
+}
+
+// Headers is a monitor's custom request headers, keyed by name. Baromio sends
+// them the way it stores them (§5.4): a list of {"name", "value"} objects,
+// an empty list when there are none - not a JSON object.
+type Headers map[string]string
+
+// UnmarshalJSON decodes Baromio's header list into a name -> value map.
+func (h *Headers) UnmarshalJSON(data []byte) error {
+	var list []struct {
+		Name  string `json:"name"`
+		Value string `json:"value"`
+	}
+	if err := json.Unmarshal(data, &list); err != nil {
+		return fmt.Errorf("headers: expected a list of {name, value} objects: %w", err)
+	}
+
+	decoded := make(Headers, len(list))
+	for _, header := range list {
+		decoded[header.Name] = header.Value
+	}
+	*h = decoded
+
+	return nil
 }
 
 // ConfigResponse is the http/keyword/tcp-only monitor list for this Probe's
