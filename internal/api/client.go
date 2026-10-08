@@ -21,15 +21,19 @@ type Client struct {
 	baseURL    string
 	httpClient *http.Client
 	identity   *identity.Identity
+	userAgent  string
 }
 
 // New builds a Client against baseURL (e.g. https://baromio.io) using id for
-// request signing on every endpoint except Enroll.
-func New(baseURL string, id *identity.Identity) *Client {
+// request signing on every endpoint except Enroll. Every request carries
+// "User-Agent: Baromio-Probe/<version>" so the Cloudflare rule in front of
+// Baromio can recognise Probe traffic instead of Go's default agent.
+func New(baseURL string, id *identity.Identity, version string) *Client {
 	return &Client{
 		baseURL:    baseURL,
 		httpClient: &http.Client{Timeout: 30 * time.Second},
 		identity:   id,
+		userAgent:  "Baromio-Probe/" + version,
 	}
 }
 
@@ -62,7 +66,7 @@ func (c *Client) Enroll(req EnrollRequest) (*EnrollResponse, error) {
 		return nil, fmt.Errorf("encoding enroll request: %w", err)
 	}
 
-	httpReq, err := http.NewRequest(http.MethodPost, c.baseURL+"/api/v1/probe/enroll", bytes.NewReader(body))
+	httpReq, err := c.newRequest(http.MethodPost, "/api/v1/probe/enroll", bytes.NewReader(body))
 	if err != nil {
 		return nil, err
 	}
@@ -174,7 +178,7 @@ type ConfigResponse struct {
 // on first call); notModified is true on a 304, in which case cfg is nil and
 // the Probe should keep its cached config.
 func (c *Client) Config(etag string) (cfg *ConfigResponse, newEtag string, notModified bool, err error) {
-	httpReq, err := http.NewRequest(http.MethodGet, c.baseURL+"/api/v1/probe/config", nil)
+	httpReq, err := c.newRequest(http.MethodGet, "/api/v1/probe/config", nil)
 	if err != nil {
 		return nil, "", false, err
 	}
@@ -217,7 +221,7 @@ func (c *Client) doSigned(method, path string, body []byte) (*http.Response, []b
 		reader = bytes.NewReader(body)
 	}
 
-	httpReq, err := http.NewRequest(method, c.baseURL+path, reader)
+	httpReq, err := c.newRequest(method, path, reader)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -234,6 +238,20 @@ func (c *Client) doSigned(method, path string, body []byte) (*http.Response, []b
 	respBody, _ := io.ReadAll(resp.Body)
 
 	return resp, respBody, nil
+}
+
+// newRequest builds a request to path on baseURL carrying the Probe's
+// User-Agent and asking for JSON, so a failed validation comes back as a 422
+// body instead of Laravel's redirect to the homepage.
+func (c *Client) newRequest(method, path string, body io.Reader) (*http.Request, error) {
+	req, err := http.NewRequest(method, c.baseURL+path, body)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("User-Agent", c.userAgent)
+	req.Header.Set("Accept", "application/json")
+
+	return req, nil
 }
 
 // sign attaches the X-Baromio-Probe/Timestamp/Signature headers, matching

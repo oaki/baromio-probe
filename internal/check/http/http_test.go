@@ -162,3 +162,47 @@ func TestCheckRefusesARedirectOutsideTheAllowlist(t *testing.T) {
 		t.Errorf("expected RefusedCheck(13), got %d", result.ErrorCode)
 	}
 }
+
+func TestCheckSendsTheProbeUserAgent(t *testing.T) {
+	var sawAgents []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		sawAgents = append(sawAgents, r.Header.Get("User-Agent"))
+		if r.Method == http.MethodHead {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	Check(context.Background(), Request{URL: srv.URL, TimeoutSeconds: 5, UserAgent: "Baromio-Probe/1.2.3"}, loopbackAllowlist(t))
+
+	if len(sawAgents) != 2 {
+		t.Fatalf("expected HEAD then GET fallback, server saw %d requests", len(sawAgents))
+	}
+	for i, agent := range sawAgents {
+		if agent != "Baromio-Probe/1.2.3" {
+			t.Errorf("request %d: expected User-Agent Baromio-Probe/1.2.3, got %q", i, agent)
+		}
+	}
+}
+
+func TestCheckLetsAMonitorHeaderOverrideTheUserAgent(t *testing.T) {
+	var sawAgent string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		sawAgent = r.Header.Get("User-Agent")
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	Check(context.Background(), Request{
+		URL:            srv.URL,
+		TimeoutSeconds: 5,
+		UserAgent:      "Baromio-Probe/1.2.3",
+		Headers:        map[string]string{"user-agent": "CustomerAgent/1"},
+	}, loopbackAllowlist(t))
+
+	if sawAgent != "CustomerAgent/1" {
+		t.Errorf("expected the monitor's own User-Agent header to win, got %q", sawAgent)
+	}
+}

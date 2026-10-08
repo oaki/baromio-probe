@@ -67,7 +67,7 @@ func run(logger *slog.Logger) error {
 		return fmt.Errorf("loading identity: %w", err)
 	}
 
-	client := api.New(cfg.URL, id)
+	client := api.New(cfg.URL, id, Version)
 
 	if !id.IsEnrolled() {
 		if cfg.EnrollToken == "" {
@@ -242,6 +242,7 @@ func (s *probeState) check(ctx context.Context, cfg scheduler.MonitorConfig) boo
 		result := httpcheck.Check(ctx, httpcheck.Request{
 			URL: cfg.URL, Keyword: cfg.Type == "keyword", KeywordValue: cfg.Keyword,
 			KeywordType: cfg.KeywordType, TimeoutSeconds: cfg.TimeoutSeconds, Headers: cfg.Headers,
+			UserAgent: "Baromio-Probe/" + Version,
 		}, s.allow)
 
 		entry.IsUp = result.IsUp

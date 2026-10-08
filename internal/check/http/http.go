@@ -25,6 +25,7 @@ type Request struct {
 	KeywordType    string // "exists" or "not_exists"
 	TimeoutSeconds int
 	Headers        map[string]string
+	UserAgent      string // sent unless Headers sets its own User-Agent
 }
 
 // TLSInfo is the leaf certificate's expiry and issuer, read from the HTTPS
@@ -137,6 +138,10 @@ func doRequest(ctx context.Context, client *http.Client, method string, req Requ
 	httpReq, err := http.NewRequestWithContext(ctx, method, req.URL, nil)
 	if err != nil {
 		return nil, err
+	}
+
+	if req.UserAgent != "" {
+		httpReq.Header.Set("User-Agent", req.UserAgent)
 	}
 
 	for name, value := range req.Headers {

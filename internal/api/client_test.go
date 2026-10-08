@@ -33,7 +33,7 @@ func TestEnrollSendsTheExpectedBody(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	client := New(srv.URL, testIdentity(t))
+	client := New(srv.URL, testIdentity(t), "test")
 
 	resp, err := client.Enroll(EnrollRequest{EnrollmentToken: "tok", PublicKey: "pub-key-b64"})
 	if err != nil {
@@ -55,7 +55,7 @@ func TestEnrollReturnsTheServerErrorMessage(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	client := New(srv.URL, testIdentity(t))
+	client := New(srv.URL, testIdentity(t), "test")
 
 	_, err := client.Enroll(EnrollRequest{EnrollmentToken: "expired"})
 	if err == nil {
@@ -83,7 +83,7 @@ func TestReportSignsTheRequestVerifiably(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	client := New(srv.URL, id)
+	client := New(srv.URL, id, "test")
 
 	_, err := client.Report(ReportRequest{Results: []ReportResult{{ID: "r1", MonitorID: "m1", IsUp: true}}})
 	if err != nil {
@@ -119,7 +119,7 @@ func TestConfigSendsIfNoneMatchAndHandles304(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	client := New(srv.URL, testIdentity(t))
+	client := New(srv.URL, testIdentity(t), "test")
 
 	cfg, etag, notModified, err := client.Config(`"5"`)
 	if err != nil {
@@ -143,7 +143,7 @@ func TestConfigReturnsTheMonitorListOnChange(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	client := New(srv.URL, testIdentity(t))
+	client := New(srv.URL, testIdentity(t), "test")
 
 	cfg, _, notModified, err := client.Config(`"5"`)
 	if err != nil {
@@ -154,6 +154,49 @@ func TestConfigReturnsTheMonitorListOnChange(t *testing.T) {
 	}
 	if cfg == nil || cfg.ConfigVersion != 6 {
 		t.Errorf("expected config version 6, got %+v", cfg)
+	}
+}
+
+func TestEveryRequestIdentifiesItselfAndAsksForJSON(t *testing.T) {
+	var gotAgents, gotAccepts []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAgents = append(gotAgents, r.Header.Get("User-Agent"))
+		gotAccepts = append(gotAccepts, r.Header.Get("Accept"))
+		switch r.URL.Path {
+		case "/api/v1/probe/enroll":
+			w.WriteHeader(http.StatusCreated)
+			json.NewEncoder(w).Encode(EnrollResponse{ProbeID: "new-probe-id"})
+		case "/api/v1/probe/config":
+			json.NewEncoder(w).Encode(ConfigResponse{ConfigVersion: 1})
+		default:
+			json.NewEncoder(w).Encode(ReportResponse{})
+		}
+	}))
+	defer srv.Close()
+
+	client := New(srv.URL, testIdentity(t), "1.2.3")
+
+	if _, err := client.Enroll(EnrollRequest{EnrollmentToken: "tok"}); err != nil {
+		t.Fatalf("enroll: unexpected error: %v", err)
+	}
+	if _, _, _, err := client.Config(""); err != nil {
+		t.Fatalf("config: unexpected error: %v", err)
+	}
+	if _, err := client.Report(ReportRequest{}); err != nil {
+		t.Fatalf("report: unexpected error: %v", err)
+	}
+
+	if len(gotAgents) != 3 {
+		t.Fatalf("expected 3 requests, got %d", len(gotAgents))
+	}
+	for i, agent := range gotAgents {
+		if agent != "Baromio-Probe/1.2.3" {
+			t.Errorf("request %d: expected User-Agent Baromio-Probe/1.2.3, got %q", i, agent)
+		}
+		// Without it Laravel answers a failed validation with a 302 to the homepage.
+		if gotAccepts[i] != "application/json" {
+			t.Errorf("request %d: expected Accept application/json, got %q", i, gotAccepts[i])
+		}
 	}
 }
 
