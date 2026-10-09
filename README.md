@@ -62,7 +62,10 @@ browser) - matching exactly how Baromio's own fleet checks them: HEAD first
 for `http` with a GET fallback on 405, full redirect-following GET for
 `keyword`, a plain TCP connect for `tcp`. A monitor's target - and every
 redirect hop it follows - must fall inside `BAROMIO_ALLOW` or the Probe
-refuses to check it at all.
+refuses to check it at all. A hostname is allowed when it is listed in
+`BAROMIO_ALLOW` itself, or when every address it resolves to falls inside an
+allowed range; a name that does not resolve is refused. The Probe reports a
+refused monitor to Baromio, which shows it as blocked.
 
 ## Verifying a release
 
