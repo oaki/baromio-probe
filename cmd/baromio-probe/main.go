@@ -9,6 +9,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"net"
 	"os"
 	"os/signal"
 	"runtime"
@@ -186,10 +187,19 @@ func pollConfig(ctx context.Context, logger *slog.Logger, client *api.Client, sc
 
 func targetAllowed(allow *allowlist.Allowlist, m api.ConfigMonitor) bool {
 	if m.Type == "tcp" {
-		return allow.AllowsHostPort(m.Host, strconv.Itoa(m.Port))
+		return allow.AllowsTarget(m.Host, strconv.Itoa(m.Port), lookupHost)
 	}
 
-	return allow.AllowsHostPort(hostFromURL(m.URL), "")
+	return allow.AllowsTarget(hostFromURL(m.URL), "", lookupHost)
+}
+
+// lookupHost resolves with a short timeout so one slow name cannot stall the
+// whole config update.
+func lookupHost(host string) ([]net.IP, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	return net.DefaultResolver.LookupIP(ctx, "ip", host)
 }
 
 func hostFromURL(rawURL string) string {

@@ -98,3 +98,55 @@ func TestSplitHostPortOrDefault(t *testing.T) {
 		t.Errorf("expected default port 443, got %s:%s", host, port)
 	}
 }
+
+func fakeLookup(ips ...string) func(string) ([]net.IP, error) {
+	return func(string) ([]net.IP, error) {
+		out := make([]net.IP, 0, len(ips))
+		for _, s := range ips {
+			out = append(out, net.ParseIP(s))
+		}
+		return out, nil
+	}
+}
+
+func TestAllowsTargetResolvesAHostnameIntoAnAllowedCidr(t *testing.T) {
+	a, _ := Parse("10.0.0.0/8")
+
+	if !a.AllowsTarget("intranet.example", "", fakeLookup("10.1.2.3")) {
+		t.Error("expected a hostname resolving into an allowed CIDR to be allowed")
+	}
+}
+
+func TestAllowsTargetRefusesAHostnameResolvingOutside(t *testing.T) {
+	a, _ := Parse("10.0.0.0/8")
+
+	if a.AllowsTarget("public.example", "", fakeLookup("93.184.216.34")) {
+		t.Error("expected a hostname resolving outside the allowlist to be refused")
+	}
+}
+
+func TestAllowsTargetRefusesWhenOneAddressIsOutside(t *testing.T) {
+	a, _ := Parse("10.0.0.0/8")
+
+	if a.AllowsTarget("mixed.example", "", fakeLookup("10.0.0.1", "93.184.216.34")) {
+		t.Error("expected every resolved address to need allowing")
+	}
+}
+
+func TestAllowsTargetRefusesWhenResolutionFails(t *testing.T) {
+	a, _ := Parse("10.0.0.0/8")
+
+	lookup := func(string) ([]net.IP, error) { return nil, net.UnknownNetworkError("nope") }
+	if a.AllowsTarget("gone.example", "", lookup) {
+		t.Error("expected a hostname that does not resolve to be refused")
+	}
+}
+
+func TestAllowsTargetSkipsDnsForAnExplicitHost(t *testing.T) {
+	a, _ := Parse("listed.example")
+
+	lookup := func(string) ([]net.IP, error) { t.Fatal("lookup must not run for a listed host"); return nil, nil }
+	if !a.AllowsTarget("listed.example", "", lookup) {
+		t.Error("expected an explicitly listed host to be allowed")
+	}
+}

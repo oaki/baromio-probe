@@ -100,6 +100,27 @@ func (a *Allowlist) AllowsResolvedIPs(host string, ips []net.IP, port string) bo
 	return true
 }
 
+// AllowsTarget is the check to use before a monitor is run: a host or literal
+// IP that the allowlist names is allowed outright, and any other hostname is
+// resolved with lookup and allowed only when every address it resolves to
+// falls inside an allowed range. A hostname that does not resolve is refused.
+func (a *Allowlist) AllowsTarget(host, port string, lookup func(string) ([]net.IP, error)) bool {
+	if a.AllowsHostPort(host, port) {
+		return true
+	}
+
+	if net.ParseIP(host) != nil {
+		return false
+	}
+
+	ips, err := lookup(host)
+	if err != nil {
+		return false
+	}
+
+	return a.AllowsResolvedIPs(host, ips, port)
+}
+
 func (a *Allowlist) allowsIP(ip net.IP) bool {
 	for _, rule := range a.rules {
 		if rule.cidr != nil && rule.cidr.Contains(ip) {
