@@ -59,24 +59,41 @@ func Check(ctx context.Context, req Request, allow *allowlist.Allowlist) Result 
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
+	if _, _, err := allowlist.TargetFromURL(req.URL); err != nil {
+		return Result{IsUp: false, ErrorCode: errmap.RefusedCheck}
+	}
+
+	dialer := &net.Dialer{Timeout: timeout}
+	dial := dialer.DialContext
+	if allow != nil {
+		dial = allow.DialContext(dialer, allowlist.SystemLookup)
+	}
+
 	var tlsInfo *TLSInfo
 	client := &http.Client{
 		CheckRedirect: func(hopReq *http.Request, via []*http.Request) error {
 			if len(via) >= 10 {
 				return http.ErrUseLastResponse
 			}
-			if !hostAllowed(ctx, allow, hopReq.URL.Hostname(), hopReq.URL.Port()) {
+			if hopReq.URL.User != nil || !hostAllowed(ctx, allow, hopReq.URL.Hostname(), hopReq.URL.Port()) {
 				return errRefused
 			}
 			return nil
 		},
 		Transport: &http.Transport{
-			DialContext: (&net.Dialer{Timeout: timeout}).DialContext,
+			DialContext: dial,
 			DialTLSContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
-				conn, err := tls.Dial(network, addr, &tls.Config{ServerName: hostOnly(addr)})
+				raw, err := dial(ctx, network, addr)
 				if err != nil {
 					return nil, err
 				}
+
+				conn := tls.Client(raw, &tls.Config{ServerName: hostOnly(addr)})
+				if err := conn.HandshakeContext(ctx); err != nil {
+					raw.Close()
+					return nil, err
+				}
+
 				if state := conn.ConnectionState(); len(state.PeerCertificates) > 0 {
 					leaf := state.PeerCertificates[0]
 					tlsInfo = &TLSInfo{ExpiresAtUnix: leaf.NotAfter.Unix(), Issuer: leaf.Issuer.CommonName}

@@ -60,6 +60,10 @@ func LoadOrGenerate(dataDir string) (*Identity, error) {
 		return nil, fmt.Errorf("decoding stored private key: %w", err)
 	}
 
+	if len(pub) != ed25519.PublicKeySize || len(priv) != ed25519.PrivateKeySize {
+		return nil, fmt.Errorf("stored identity has a key of the wrong length; delete %s and enroll again", fileName)
+	}
+
 	return &Identity{
 		ProbeID:    stored.ProbeID,
 		PublicKey:  ed25519.PublicKey(pub),

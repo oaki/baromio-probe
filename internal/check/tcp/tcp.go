@@ -4,10 +4,13 @@
 package tcp
 
 import (
+	"context"
+	"errors"
 	"net"
 	"strconv"
 	"time"
 
+	"github.com/oaki/baromio-probe/internal/allowlist"
 	"github.com/oaki/baromio-probe/internal/errmap"
 )
 
@@ -21,14 +24,25 @@ type Result struct {
 	ErrorCode      errmap.Code
 }
 
-// Check connects to host:port. The caller is responsible for the allowlist
-// check before calling this - a refused target is never dialed at all.
-func Check(host string, port int) Result {
+// Check connects to host:port. With a non-nil allow the address actually dialed
+// is vetted against it (a name is resolved once, here, and the vetted address
+// is the one connected to); a refused target is never dialed at all.
+func Check(ctx context.Context, host string, port int, allow *allowlist.Allowlist) Result {
+	dialer := &net.Dialer{Timeout: Timeout}
+	dial := dialer.DialContext
+	if allow != nil {
+		dial = allow.DialContext(dialer, allowlist.SystemLookup)
+	}
+
 	start := time.Now()
-	conn, err := net.DialTimeout("tcp", net.JoinHostPort(host, strconv.Itoa(port)), Timeout)
+	conn, err := dial(ctx, "tcp", net.JoinHostPort(host, strconv.Itoa(port)))
 	elapsed := time.Since(start)
 
 	if err != nil {
+		if errors.Is(err, allowlist.ErrRefused) {
+			return Result{IsUp: false, ResponseTimeMs: int(elapsed.Milliseconds()), ErrorCode: errmap.RefusedCheck}
+		}
+
 		return Result{
 			IsUp:           false,
 			ResponseTimeMs: int(elapsed.Milliseconds()),

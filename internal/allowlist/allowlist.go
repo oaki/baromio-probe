@@ -5,7 +5,10 @@
 package allowlist
 
 import (
+	"context"
+	"errors"
 	"net"
+	"net/url"
 	"strconv"
 	"strings"
 )
@@ -140,4 +143,98 @@ func SplitHostPortOrDefault(hostPort string, defaultPort int) (host, port string
 	}
 
 	return h, p
+}
+
+// ErrRefused is wrapped by every refusal so a caller can tell "the allowlist
+// said no" from an ordinary network failure. Its text carries "refused check",
+// which the http check maps to the RefusedCheck error code.
+var ErrRefused = errors.New("refused check: target outside the Probe allowlist")
+
+// TargetFromURL returns the host and port a URL will actually connect to, with
+// the scheme's default port filled in. It uses the standard parser, so
+// "http://10.0.0.1:80@169.254.169.254/" is read as host 169.254.169.254, and it
+// refuses anything that is not plain http(s) or that carries userinfo, since a
+// monitor URL never needs credentials in it.
+func TargetFromURL(raw string) (host, port string, err error) {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return "", "", err
+	}
+
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return "", "", errors.New("only http and https URLs can be checked")
+	}
+
+	if u.User != nil {
+		return "", "", errors.New("a URL with credentials in it cannot be checked")
+	}
+
+	host = u.Hostname()
+	if host == "" {
+		return "", "", errors.New("the URL has no host")
+	}
+
+	port = u.Port()
+	if port == "" {
+		port = "80"
+		if u.Scheme == "https" {
+			port = "443"
+		}
+	}
+
+	return host, port, nil
+}
+
+// DialContext returns a dial function that enforces the allowlist on the
+// address it really connects to. A host or literal IP the allowlist names is
+// dialed as asked. Any other name is resolved here, refused unless every
+// address falls in an allowed range, and the connection goes to one of those
+// vetted addresses, so a name that resolves differently a moment later (DNS
+// rebinding) cannot lead the Probe somewhere else.
+func (a *Allowlist) DialContext(d *net.Dialer, lookup func(ctx context.Context, host string) ([]net.IP, error)) func(ctx context.Context, network, addr string) (net.Conn, error) {
+	return func(ctx context.Context, network, addr string) (net.Conn, error) {
+		host, port, err := net.SplitHostPort(addr)
+		if err != nil {
+			return nil, err
+		}
+
+		if a.AllowsHostPort(host, port) {
+			return d.DialContext(ctx, network, addr)
+		}
+
+		if net.ParseIP(host) != nil {
+			return nil, ErrRefused
+		}
+
+		ips, err := lookup(ctx, host)
+		if err != nil {
+			return nil, err
+		}
+
+		if len(ips) == 0 {
+			return nil, ErrRefused
+		}
+
+		for _, ip := range ips {
+			if !a.allowsIP(ip) {
+				return nil, ErrRefused
+			}
+		}
+
+		var lastErr error
+		for _, ip := range ips {
+			conn, err := d.DialContext(ctx, network, net.JoinHostPort(ip.String(), port))
+			if err == nil {
+				return conn, nil
+			}
+			lastErr = err
+		}
+
+		return nil, lastErr
+	}
+}
+
+// SystemLookup resolves host with the system resolver, for use as DialContext's lookup.
+func SystemLookup(ctx context.Context, host string) ([]net.IP, error) {
+	return net.DefaultResolver.LookupIP(ctx, "ip", host)
 }

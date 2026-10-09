@@ -79,7 +79,7 @@ func (c *Client) Enroll(req EnrollRequest) (*EnrollResponse, error) {
 	}
 	defer resp.Body.Close()
 
-	respBody, _ := io.ReadAll(resp.Body)
+	respBody, _ := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes))
 
 	if resp.StatusCode != http.StatusCreated {
 		return nil, apiError(resp.StatusCode, respBody)
@@ -96,6 +96,10 @@ func (c *Client) Enroll(req EnrollRequest) (*EnrollResponse, error) {
 // MaxResultsPerReport mirrors ReportProbeResultsRequest::MAX_RESULTS on the
 // Baromio side: a report carrying more is refused with 413 (§5.3).
 const MaxResultsPerReport = 500
+
+// maxResponseBytes bounds any response read from Baromio, so a misbehaving
+// server or a proxy in between cannot make the Probe buffer without limit.
+const maxResponseBytes = 8 << 20
 
 // ReportRequest is the body of POST /api/v1/probe/report. Results are the
 // buffered entries as stored, so nothing a check recorded (TLS included) is
@@ -218,7 +222,7 @@ func (c *Client) Config(etag string) (cfg *ConfigResponse, newEtag string, notMo
 		return nil, newEtag, true, nil
 	}
 
-	body, _ := io.ReadAll(resp.Body)
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes))
 
 	if resp.StatusCode != http.StatusOK {
 		return nil, "", false, apiError(resp.StatusCode, body)
@@ -252,7 +256,7 @@ func (c *Client) doSigned(method, path string, body []byte) (*http.Response, []b
 	}
 	defer resp.Body.Close()
 
-	respBody, _ := io.ReadAll(resp.Body)
+	respBody, _ := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes))
 
 	return resp, respBody, nil
 }

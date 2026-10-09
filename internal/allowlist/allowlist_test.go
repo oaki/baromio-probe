@@ -1,8 +1,12 @@
 package allowlist
 
 import (
+	"context"
 	"net"
+	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 )
 
 func TestAllowsHostPortWithinCidr(t *testing.T) {
@@ -149,4 +153,128 @@ func TestAllowsTargetSkipsDnsForAnExplicitHost(t *testing.T) {
 	if !a.AllowsTarget("listed.example", "", lookup) {
 		t.Error("expected an explicitly listed host to be allowed")
 	}
+}
+
+func TestTargetFromURLReadsHostAndPort(t *testing.T) {
+	host, port, err := TargetFromURL("https://intranet.example:8443/health?x=1")
+	if err != nil || host != "intranet.example" || port != "8443" {
+		t.Fatalf("got %q %q %v", host, port, err)
+	}
+
+	host, port, err = TargetFromURL("http://10.0.0.5/")
+	if err != nil || host != "10.0.0.5" || port != "80" {
+		t.Fatalf("expected default port 80, got %q %q %v", host, port, err)
+	}
+
+	_, port, _ = TargetFromURL("https://intranet.example/")
+	if port != "443" {
+		t.Errorf("expected default port 443, got %q", port)
+	}
+}
+
+func TestTargetFromURLRefusesUserinfoAndOddSchemes(t *testing.T) {
+	for _, raw := range []string{
+		"http://10.0.0.1:80@169.254.169.254/latest/meta-data/",
+		"http://user@10.0.0.1/",
+		"ftp://10.0.0.1/",
+		"file:///etc/passwd",
+		"//10.0.0.1/",
+		"10.0.0.1",
+		"",
+	} {
+		if _, _, err := TargetFromURL(raw); err == nil {
+			t.Errorf("expected %q to be refused", raw)
+		}
+	}
+}
+
+func listenOnLoopback(t *testing.T) (port string, accepted *int32) {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { ln.Close() })
+	var n int32
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			atomic.AddInt32(&n, 1)
+			c.Close()
+		}
+	}()
+	_, p, _ := net.SplitHostPort(ln.Addr().String())
+	return p, &n
+}
+
+func ctxLookup(ips ...string) func(context.Context, string) ([]net.IP, error) {
+	f := fakeLookup(ips...)
+	return func(_ context.Context, h string) ([]net.IP, error) { return f(h) }
+}
+
+func TestDialContextConnectsToAVettedAddress(t *testing.T) {
+	port, accepted := listenOnLoopback(t)
+	a, _ := Parse("127.0.0.0/8")
+	dial := a.DialContext(&net.Dialer{Timeout: time.Second}, ctxLookup("127.0.0.1"))
+
+	conn, err := dial(context.Background(), "tcp", "service.internal:"+port)
+	if err != nil {
+		t.Fatalf("expected the connection to be made: %v", err)
+	}
+	conn.Close()
+	time.Sleep(50 * time.Millisecond)
+	if atomic.LoadInt32(accepted) != 1 {
+		t.Error("expected exactly one connection to the vetted address")
+	}
+}
+
+func TestDialContextRefusesAnAddressOutsideTheAllowlist(t *testing.T) {
+	a, _ := Parse("127.0.0.0/8")
+	dial := a.DialContext(&net.Dialer{Timeout: time.Second}, ctxLookup("169.254.169.254"))
+
+	_, err := dial(context.Background(), "tcp", "rebind.example:80")
+	if err == nil || !strings.Contains(err.Error(), "refused check") {
+		t.Errorf("expected a refused check, got %v", err)
+	}
+}
+
+func TestDialContextRefusesWhenAnyResolvedAddressIsOutside(t *testing.T) {
+	port, accepted := listenOnLoopback(t)
+	a, _ := Parse("127.0.0.0/8")
+	dial := a.DialContext(&net.Dialer{Timeout: time.Second}, ctxLookup("127.0.0.1", "93.184.216.34"))
+
+	if _, err := dial(context.Background(), "tcp", "mixed.example:"+port); err == nil {
+		t.Error("expected a mixed answer to be refused")
+	}
+	if atomic.LoadInt32(accepted) != 0 {
+		t.Error("a refused target must not be dialed at all")
+	}
+}
+
+func TestDialContextRefusesALiteralIPOutsideTheAllowlist(t *testing.T) {
+	a, _ := Parse("10.0.0.0/8")
+	dial := a.DialContext(&net.Dialer{Timeout: time.Second}, ctxLookup())
+
+	if _, err := dial(context.Background(), "tcp", "169.254.169.254:80"); err == nil {
+		t.Error("expected a literal address outside the allowlist to be refused")
+	}
+}
+
+func TestDialContextDialsAListedHostByName(t *testing.T) {
+	port, _ := listenOnLoopback(t)
+	a, _ := Parse("localhost")
+	lookup := func(context.Context, string) ([]net.IP, error) {
+		t.Fatal("a listed host is not vetted by address")
+		return nil, nil
+	}
+	dial := a.DialContext(&net.Dialer{Timeout: time.Second}, lookup)
+
+	conn, err := dial(context.Background(), "tcp", "localhost:"+port)
+	if err != nil {
+		t.Fatalf("expected a listed host to be dialed: %v", err)
+	}
+	conn.Close()
 }

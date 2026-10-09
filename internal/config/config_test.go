@@ -57,3 +57,23 @@ func TestLoadReadsEnrollToken(t *testing.T) {
 		t.Errorf("expected enroll token to be read, got %q", cfg.EnrollToken)
 	}
 }
+
+func TestLoadRefusesPlainHTTPToANonLoopbackHost(t *testing.T) {
+	t.Setenv("BAROMIO_ALLOW", "10.0.0.0/8")
+	t.Setenv("BAROMIO_URL", "http://baromio.example")
+
+	if _, err := Load(); err == nil {
+		t.Fatal("expected plain http to a remote host to be refused")
+	}
+}
+
+func TestLoadAllowsPlainHTTPToLoopbackForDevelopment(t *testing.T) {
+	t.Setenv("BAROMIO_ALLOW", "10.0.0.0/8")
+
+	for _, u := range []string{"http://127.0.0.1:8000", "http://localhost:8000", "https://baromio.io"} {
+		t.Setenv("BAROMIO_URL", u)
+		if _, err := Load(); err != nil {
+			t.Errorf("expected %s to be accepted, got %v", u, err)
+		}
+	}
+}

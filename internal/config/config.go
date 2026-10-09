@@ -5,6 +5,8 @@ package config
 
 import (
 	"fmt"
+	"net"
+	"net/url"
 	"os"
 	"strings"
 )
@@ -41,6 +43,10 @@ func Load() (Config, error) {
 		DataDir:     envOr("BAROMIO_DATA_DIR", "/var/lib/baromio-probe"),
 	}
 
+	if err := requireSecureURL(cfg.URL); err != nil {
+		return Config{}, err
+	}
+
 	if cfg.Allow == "" {
 		return Config{}, fmt.Errorf("BAROMIO_ALLOW is required: at least one CIDR range, host, or host:port must be allowed")
 	}
@@ -54,4 +60,31 @@ func envOr(key, fallback string) string {
 	}
 
 	return fallback
+}
+
+// requireSecureURL refuses a plain-http BAROMIO_URL unless it points at this
+// machine: the config the Probe is told to check arrives over this connection,
+// and nothing else authenticates it.
+func requireSecureURL(raw string) error {
+	u, err := url.Parse(raw)
+	if err != nil || u.Host == "" {
+		return fmt.Errorf("BAROMIO_URL is not a valid URL: %q", raw)
+	}
+
+	if u.Scheme == "https" {
+		return nil
+	}
+
+	if u.Scheme == "http" {
+		host := u.Hostname()
+		if host == "localhost" {
+			return nil
+		}
+
+		if ip := net.ParseIP(host); ip != nil && ip.IsLoopback() {
+			return nil
+		}
+	}
+
+	return fmt.Errorf("BAROMIO_URL must use https (plain http is only accepted for a loopback address)")
 }

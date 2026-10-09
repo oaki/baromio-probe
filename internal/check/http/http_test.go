@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/oaki/baromio-probe/internal/allowlist"
@@ -204,5 +205,29 @@ func TestCheckLetsAMonitorHeaderOverrideTheUserAgent(t *testing.T) {
 
 	if sawAgent != "CustomerAgent/1" {
 		t.Errorf("expected the monitor's own User-Agent header to win, got %q", sawAgent)
+	}
+}
+
+func TestCheckRefusesAURLWithUserinfoThatHidesTheRealHost(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Error("a refused URL must never reach the network")
+	}))
+	defer srv.Close()
+
+	hostPort := strings.TrimPrefix(srv.URL, "http://")
+	result := Check(context.Background(), Request{
+		URL: "http://" + hostPort + "@" + hostPort + "/", TimeoutSeconds: 5,
+	}, loopbackAllowlist(t))
+
+	if result.IsUp || result.ErrorCode != 13 {
+		t.Errorf("expected RefusedCheck(13), got %+v", result)
+	}
+}
+
+func TestCheckRefusesANonHTTPScheme(t *testing.T) {
+	result := Check(context.Background(), Request{URL: "ftp://127.0.0.1/", TimeoutSeconds: 5}, loopbackAllowlist(t))
+
+	if result.IsUp || result.ErrorCode != 13 {
+		t.Errorf("expected RefusedCheck(13), got %+v", result)
 	}
 }

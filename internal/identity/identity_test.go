@@ -2,6 +2,8 @@ package identity
 
 import (
 	"crypto/ed25519"
+	"os"
+	"path/filepath"
 	"testing"
 )
 
@@ -80,5 +82,17 @@ func TestSignProducesAVerifiableSignature(t *testing.T) {
 
 	if sig == "" {
 		t.Fatal("expected a non-empty signature")
+	}
+}
+
+func TestLoadRefusesAStoredKeyOfTheWrongLength(t *testing.T) {
+	dir := t.TempDir()
+	body := `{"probe_id":"p","public_key":"AAAA","private_key":"AAAA"}`
+	if err := os.WriteFile(filepath.Join(dir, "identity.json"), []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := LoadOrGenerate(dir); err == nil {
+		t.Fatal("expected a truncated key to be refused rather than panic on first sign")
 	}
 }

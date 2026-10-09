@@ -190,7 +190,12 @@ func targetAllowed(allow *allowlist.Allowlist, m api.ConfigMonitor) bool {
 		return allow.AllowsTarget(m.Host, strconv.Itoa(m.Port), lookupHost)
 	}
 
-	return allow.AllowsTarget(hostFromURL(m.URL), "", lookupHost)
+	host, port, err := allowlist.TargetFromURL(m.URL)
+	if err != nil {
+		return false
+	}
+
+	return allow.AllowsTarget(host, port, lookupHost)
 }
 
 // lookupHost resolves with a short timeout so one slow name cannot stall the
@@ -200,30 +205,6 @@ func lookupHost(host string) ([]net.IP, error) {
 	defer cancel()
 
 	return net.DefaultResolver.LookupIP(ctx, "ip", host)
-}
-
-func hostFromURL(rawURL string) string {
-	// A minimal, dependency-free host extraction: good enough for the
-	// allowlist pre-check, which only needs the hostname, not full parsing.
-	rest := rawURL
-	if i := indexAfterScheme(rest); i >= 0 {
-		rest = rest[i:]
-	}
-	for i, c := range rest {
-		if c == '/' || c == ':' || c == '?' {
-			return rest[:i]
-		}
-	}
-	return rest
-}
-
-func indexAfterScheme(s string) int {
-	for i := 0; i+2 < len(s); i++ {
-		if s[i] == ':' && s[i+1] == '/' && s[i+2] == '/' {
-			return i + 3
-		}
-	}
-	return -1
 }
 
 func (s *probeState) setBlocked(ids []string) {
@@ -243,7 +224,7 @@ func (s *probeState) check(ctx context.Context, cfg scheduler.MonitorConfig) boo
 
 	switch cfg.Type {
 	case "tcp":
-		result := tcp.Check(cfg.Host, cfg.Port)
+		result := tcp.Check(ctx, cfg.Host, cfg.Port, s.allow)
 		entry.IsUp = result.IsUp
 		entry.TimingsMs = map[string]int{"total": result.ResponseTimeMs}
 		if result.ErrorCode != 0 {
