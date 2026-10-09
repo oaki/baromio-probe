@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/oaki/baromio-probe/internal/buffer"
@@ -278,4 +279,23 @@ func mustReadAll(r *http.Request) []byte {
 	defer r.Body.Close()
 	data, _ := io.ReadAll(r.Body)
 	return data
+}
+
+func TestReportSendsAnEmptyResultsArrayNotNull(t *testing.T) {
+	var raw string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		raw = string(b)
+		json.NewEncoder(w).Encode(ReportResponse{})
+	}))
+	defer srv.Close()
+
+	client := New(srv.URL, testIdentity(t), "test")
+
+	if _, err := client.Report(ReportRequest{}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(raw, `"results":[]`) {
+		t.Errorf("expected results to be an empty array, got body %s", raw)
+	}
 }

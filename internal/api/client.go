@@ -120,6 +120,10 @@ type ReportResponse struct {
 
 // Report posts buffered results, signed with the Probe's identity.
 func (c *Client) Report(req ReportRequest) (*ReportResponse, error) {
+	if req.Results == nil {
+		req.Results = []buffer.Entry{}
+	}
+
 	body, err := json.Marshal(req)
 	if err != nil {
 		return nil, fmt.Errorf("encoding report request: %w", err)
