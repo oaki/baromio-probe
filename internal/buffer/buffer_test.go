@@ -1,6 +1,9 @@
 package buffer
 
 import (
+	"fmt"
+	"os"
+	"path/filepath"
 	"regexp"
 	"testing"
 	"time"
@@ -65,28 +68,21 @@ func TestAppendAndAll(t *testing.T) {
 }
 
 func TestAppendDropsExistingEntriesThatAgeOutOnTheNextAppend(t *testing.T) {
-	b, err := Open(t.TempDir())
+	dir := t.TempDir()
+
+	// A result left over from before MaxAge, as after a long outage.
+	aged := fmt.Sprintf("{\"id\":\"aged\",\"monitor_id\":\"m1\",\"checked_at\":%d}\n",
+		time.Now().Add(-MaxAge-time.Minute).Unix())
+	if err := os.WriteFile(filepath.Join(dir, fileName), []byte(aged), 0o600); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	b, err := Open(dir)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	// Within range today, but old enough that MaxAge has elapsed by the time
-	// the next result is buffered.
-	agingSoon := time.Now().Add(-MaxAge + time.Minute).Unix()
-	if _, err := b.Append(Entry{ID: "aging", MonitorID: "m1", CheckedAt: agingSoon}); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	// Simulate two minutes passing by writing the next entry with a
-	// checked_at that puts "aging" outside the window.
-	laterCutoffEntry := Entry{ID: "new", MonitorID: "m1", CheckedAt: time.Now().Unix()}
-	b.mu.Lock()
-	entries, _ := b.readAllLocked()
-	entries[0].CheckedAt = time.Now().Add(-MaxAge - time.Minute).Unix()
-	b.writeAllLocked(entries)
-	b.mu.Unlock()
-
-	dropped, err := b.Append(laterCutoffEntry)
+	dropped, err := b.Append(Entry{ID: "new", MonitorID: "m1", CheckedAt: time.Now().Unix()})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -98,6 +94,109 @@ func TestAppendDropsExistingEntriesThatAgeOutOnTheNextAppend(t *testing.T) {
 	remaining, _ := b.All()
 	if len(remaining) != 1 || remaining[0].ID != "new" {
 		t.Errorf("expected only the new entry to remain, got %+v", remaining)
+	}
+}
+
+func TestAppendDropsOldestEntriesPastTheByteLimit(t *testing.T) {
+	b, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	b.maxBytes = 2000 // about ten of these entries
+
+	now := time.Now().Unix()
+	totalDropped := 0
+
+	for i := 0; i < 50; i++ {
+		dropped, err := b.Append(Entry{ID: fmt.Sprintf("id-%02d", i), MonitorID: "m1", CheckedAt: now})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		totalDropped += dropped
+	}
+
+	info, err := os.Stat(b.path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if info.Size() > b.maxBytes {
+		t.Errorf("expected the file within %d bytes, got %d", b.maxBytes, info.Size())
+	}
+
+	entries, _ := b.All()
+	if len(entries) == 0 || entries[len(entries)-1].ID != "id-49" {
+		t.Fatalf("expected the newest entry to survive, got %+v", entries)
+	}
+	if entries[0].ID == "id-00" {
+		t.Error("expected the oldest entry to be dropped first")
+	}
+	if totalDropped+len(entries) != 50 {
+		t.Errorf("expected dropped (%d) plus kept (%d) to account for all 50 entries", totalDropped, len(entries))
+	}
+}
+
+func TestAppendDoesNotRewriteTheFileWhileUnderBothLimits(t *testing.T) {
+	b, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	b.Append(Entry{ID: "a", CheckedAt: time.Now().Unix()})
+
+	before, _ := os.Stat(b.path)
+
+	b.Append(Entry{ID: "b", CheckedAt: time.Now().Unix()})
+
+	after, _ := os.Stat(b.path)
+	if !os.SameFile(before, after) {
+		t.Error("expected an append to extend the existing file, not replace it")
+	}
+}
+
+func TestOpenRestoresStateFromAnExistingFile(t *testing.T) {
+	dir := t.TempDir()
+
+	b1, _ := Open(dir)
+	b1.Append(Entry{ID: "a", CheckedAt: time.Now().Unix()})
+	b1.Append(Entry{ID: "b", CheckedAt: time.Now().Unix()})
+
+	b2, err := Open(dir)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if b2.size != b1.size {
+		t.Errorf("expected size %d after reopen, got %d", b1.size, b2.size)
+	}
+
+	entries, _ := b2.All()
+	if len(entries) != 2 {
+		t.Errorf("expected both entries after reopen, got %d", len(entries))
+	}
+}
+
+func TestHalfWrittenLineDoesNotCostTheNextResult(t *testing.T) {
+	dir := t.TempDir()
+
+	now := time.Now().Unix()
+	content := fmt.Sprintf("{\"id\":\"good\",\"checked_at\":%d}\n{\"id\":\"half\",\"chec", now)
+	if err := os.WriteFile(filepath.Join(dir, fileName), []byte(content), 0o600); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	b, err := Open(dir)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if _, err := b.Append(Entry{ID: "next", CheckedAt: now}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	entries, _ := b.All()
+	if len(entries) != 2 || entries[0].ID != "good" || entries[1].ID != "next" {
+		t.Errorf("expected good and next to survive the torn line, got %+v", entries)
 	}
 }
 
