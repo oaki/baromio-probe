@@ -46,6 +46,11 @@ const backlogDrainDelay = 2 * time.Second
 const configPollInterval = 60 * time.Second
 
 func main() {
+	if len(os.Args) > 1 && isVersionArg(os.Args[1]) {
+		fmt.Println(versionString())
+		return
+	}
+
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
 
 	if err := run(logger); err != nil {
@@ -54,7 +59,19 @@ func main() {
 	}
 }
 
+// isVersionArg reports whether arg asks for the version. It is checked before
+// the config loads, so asking never starts a second Probe by accident.
+func isVersionArg(arg string) bool {
+	return arg == "--version" || arg == "-version" || arg == "version"
+}
+
+func versionString() string {
+	return "baromio-probe " + Version + " " + runtime.GOOS + "/" + runtime.GOARCH
+}
+
 func run(logger *slog.Logger) error {
+	logger.Info("starting", "version", Version, "platform", runtime.GOOS+"/"+runtime.GOARCH)
+
 	cfg, err := config.Load()
 	if err != nil {
 		return fmt.Errorf("loading config: %w", err)
