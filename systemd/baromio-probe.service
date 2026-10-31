@@ -17,6 +17,12 @@ ExecStart=/usr/local/bin/baromio-probe
 Restart=on-failure
 RestartSec=5s
 
+# Hard memory cap. The Probe idles around 6 MB with 18 monitors; 150M leaves
+# plenty of headroom. MemorySwapMax=0 makes an overrun an OOM kill (restarted
+# after RestartSec) instead of slow swapping on a small host.
+MemoryMax=150M
+MemorySwapMax=0
+
 ProtectSystem=strict
 ProtectHome=yes
 NoNewPrivileges=yes
